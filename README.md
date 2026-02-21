@@ -259,6 +259,195 @@ oc get nodes
 
 ---
 
+## Management VM Setup (Fresh Ubuntu VM)
+
+This section covers the complete setup from a brand-new Ubuntu VM through to a fully wired, UPS-triggered shutdown automation.
+
+### 1. Install System Packages
+
+```bash
+sudo apt update
+sudo apt install -y \
+    ansible \
+    python3-pip \
+    nut \
+    git \
+    curl
+```
+
+Then install Ansible collections and Python libraries required by the playbooks:
+
+```bash
+ansible-galaxy collection install -r /opt/okd-shutdown/requirements.yml
+pip3 install pyvmomi jmespath
+```
+
+### 2. Install and Configure the `oc` CLI
+
+```bash
+# Download from the OKD/OpenShift mirror — replace the version as needed
+curl -L https://mirror.openshift.com/pub/openshift-v4/clients/oc/latest/linux/oc.tar.gz | tar xz
+sudo mv oc /usr/local/bin/oc
+oc version
+```
+
+Copy the cluster-admin kubeconfig from your OKD cluster to the management VM:
+
+```bash
+mkdir -p ~/.kube
+# scp or paste kubeconfig content
+scp core@<bastion>:/etc/kubernetes/admin.kubeconfig ~/.kube/config
+chmod 600 ~/.kube/config
+oc cluster-info
+```
+
+### 3. Deploy this Project
+
+```bash
+sudo mkdir -p /opt/okd-shutdown
+sudo git clone https://github.com/<org>/okd-clean-cluster-shutdown.git /opt/okd-shutdown
+sudo chmod +x /opt/okd-shutdown/scripts/trigger-shutdown.sh
+sudo mkdir -p /opt/okd-shutdown/logs
+```
+
+Store the Ansible Vault password on disk — readable only by root:
+
+```bash
+echo 'your-vault-password' | sudo tee /opt/okd-shutdown/.vault_pass > /dev/null
+sudo chmod 600 /opt/okd-shutdown/.vault_pass
+```
+
+### 4. Configure NUT (Network UPS Tools)
+
+NUT has three components that each need a config file:
+
+| File | Purpose |
+|---|---|
+| `/etc/nut/nut.conf` | Sets the NUT operating mode |
+| `/etc/nut/ups.conf` | Defines the UPS and the driver used to talk to it |
+| `/etc/nut/upsd.conf` | Controls where `upsd` listens |
+| `/etc/nut/upsd.users` | Credentials that `upsmon` uses to authenticate to `upsd` |
+| `/etc/nut/upsmon.conf` | Tells `upsmon` what to monitor and what commands to run |
+
+#### 4a. `/etc/nut/nut.conf` — operating mode
+
+```
+MODE=standalone
+```
+
+Use `standalone` when the UPS is directly attached to this VM (USB or serial).
+Use `netclient` if `upsd` runs on another host and this VM only monitors it.
+
+#### 4b. `/etc/nut/ups.conf` — UPS driver
+
+**Option A — USB-attached UPS** (UPS plugged into the VM via USB passthrough):
+
+```
+[myups]
+    driver = usbhid-ups
+    port   = auto
+    desc   = "UPS attached via USB"
+```
+
+**Option B — Network/SNMP UPS** (UPS has a management card or network interface):
+
+```
+[myups]
+    driver    = snmp-ups
+    port      = 192.0.2.10     # IP or hostname of the UPS management interface
+    community = public
+    version   = 2
+    desc      = "UPS via SNMP"
+```
+
+> **VMware note:** ESXi does not automatically pass host USB devices into guests. You must either configure USB passthrough for the VM in vSphere, use a network-capable UPS (SNMP), or run `upsd` on a machine that has direct USB access and point this VM's `upsmon` at `myups@<that-host>`.
+
+#### 4c. `/etc/nut/upsd.conf` — listener
+
+```
+LISTEN 127.0.0.1 3493
+```
+
+#### 4d. `/etc/nut/upsd.users` — credentials
+
+```
+[upsmon_user]
+    password  = secret_password
+    actions   = SET
+    instcmds  = ALL
+```
+
+#### 4e. `/etc/nut/upsmon.conf` — monitoring and shutdown hook
+
+```
+# Replace myups@localhost with myups@<upsd-host> if upsd is on another machine
+MONITOR myups@localhost 1 upsmon_user secret_password master
+
+SHUTDOWNCMD "/opt/okd-shutdown/scripts/trigger-shutdown.sh"
+
+NOTIFYFLAG ONLINE   SYSLOG+EXEC
+NOTIFYFLAG ONBATT   SYSLOG+EXEC
+NOTIFYFLAG LOWBATT  SYSLOG+EXEC
+NOTIFYFLAG FSD      SYSLOG+EXEC
+NOTIFYFLAG SHUTDOWN SYSLOG+EXEC
+
+# Ignore micro-outages shorter than 30 seconds
+DEADTIME 30
+
+# How often upsmon polls upsd (seconds)
+POLLFREQ      5
+POLLFREQALERT 2
+
+# Delay before forcing power-off — set to 0 so the playbook controls timing
+FINALDELAY 0
+```
+
+### 5. Start and Enable NUT Services
+
+```bash
+sudo systemctl enable --now nut-server nut-monitor
+```
+
+Verify the UPS is visible:
+
+```bash
+upsc myups@localhost
+```
+
+You should see a list of values including `ups.status: OL` (on-line) or `ups.status: OB` (on-battery).
+
+### 6. Verify the End-to-End Wiring
+
+```bash
+# Check upsd is listening
+ss -tlnp | grep 3493
+
+# Check upsmon is connected and monitoring
+sudo systemctl status nut-monitor
+
+# Tail NUT logs
+sudo journalctl -u nut-server -u nut-monitor -f
+
+# Manually test the trigger script (safe — runs the playbook, does not cut power)
+sudo /opt/okd-shutdown/scripts/trigger-shutdown.sh
+
+# Inspect the output log
+ls -lh /opt/okd-shutdown/logs/
+tail -f /opt/okd-shutdown/logs/nut-trigger-*.log
+```
+
+A successful end-to-end flow looks like:
+
+```
+upsmon detects FSD / LOWBATT
+  → upsmon calls SHUTDOWNCMD → trigger-shutdown.sh
+    → ansible-playbook shutdown.yml runs:
+        backup → drain → vm_shutdown (workers, then CPs)
+    → (optional) management VM powers off last
+```
+
+---
+
 ## Usage
 
 ### Graceful Shutdown (Manual)
