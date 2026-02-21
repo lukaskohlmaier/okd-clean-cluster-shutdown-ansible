@@ -1,0 +1,15 @@
+---
+# =============================================================================
+# Ansible Vault — Sensitive credentials
+# =============================================================================
+# Encrypt this file:
+#   ansible-vault encrypt inventory/group_vars/vault.yml
+#
+# Or create it fresh:
+#   ansible-vault create inventory/group_vars/vault.yml
+#
+# Then reference these variables in all.yml (already done).
+# =============================================================================
+
+vault_vcenter_username: "administrator@vsphere.local"
+vault_vcenter_password: "CHANGE_ME"

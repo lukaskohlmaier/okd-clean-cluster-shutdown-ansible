@@ -1,0 +1,58 @@
+---
+# =============================================================================
+# startup.yml — OKD cluster startup (reverse of shutdown)
+# =============================================================================
+# Execution order:
+#   1. Power on control-plane VMs, then worker VMs  (role: vm_startup)
+#   2. Wait for API, nodes, operators, etcd         (role: healthcheck)
+#
+# Usage:
+#   ansible-playbook startup.yml --ask-vault-pass
+#   ansible-playbook startup.yml --vault-password-file=~/.vault_pass
+# =============================================================================
+
+- name: "OKD Cluster — Startup"
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+
+  pre_tasks:
+    - name: Ensure log directory exists
+      ansible.builtin.file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Log startup initiated
+      ansible.builtin.lineinfile:
+        path: "{{ log_dir }}/startup.log"
+        line: >-
+          {{ ansible_date_time.iso8601 }} — STARTUP INITIATED
+          (triggered by {{ ansible_env.USER | default('unknown') }})
+        create: true
+        mode: "0644"
+
+  roles:
+    - role: vm_startup
+      tags: [startup, vmware]
+    - role: healthcheck
+      tags: [healthcheck, validation]
+
+  post_tasks:
+    - name: Log startup complete
+      ansible.builtin.lineinfile:
+        path: "{{ log_dir }}/startup.log"
+        line: >-
+          {{ ansible_date_time.iso8601 }} — STARTUP COMPLETE — cluster healthy
+        create: true
+        mode: "0644"
+
+    - name: Final status message
+      ansible.builtin.debug:
+        msg: >-
+          OKD cluster '{{ cluster_name }}' is up and healthy.
+          All nodes Ready, workers uncordoned, ClusterOperators nominal.
+          See {{ log_dir }}/startup.log for full audit trail.

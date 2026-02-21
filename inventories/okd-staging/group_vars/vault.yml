@@ -1,0 +1,3 @@
+---
+vault_vcenter_username: "administrator@vsphere.local"
+vault_vcenter_password: "CHANGE_ME"

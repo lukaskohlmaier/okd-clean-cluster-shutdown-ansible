@@ -1,0 +1,61 @@
+---
+# =============================================================================
+# Test Inventory — Offline dry-run variables
+# =============================================================================
+# Used with the mock oc binary to validate playbook logic without a real
+# OKD cluster or vSphere environment.
+#
+# Usage:
+#   ansible-playbook shutdown.yml -i tests/test-inventory/ --tags backup,drain
+#   ansible-playbook startup.yml  -i tests/test-inventory/ --tags healthcheck
+# =============================================================================
+
+cluster_name: "test-cluster"
+
+# Point to the mock oc binary instead of the real one.
+oc_binary: "{{ playbook_dir }}/tests/mock-bin/oc"
+kubeconfig_path: "/dev/null"
+
+# --- etcd backup — write to a temp directory --------------------------------
+backup_dir: "/tmp/okd-test-backups"
+backup_retention_count: 3
+
+# --- Node drain settings (same as production defaults) ----------------------
+drain_timeout_seconds: 10
+drain_grace_period_seconds: 5
+drain_delete_emptydir_data: true
+drain_skip_daemonsets: true
+drain_force: true
+
+# --- VMware vSphere — dummy values (VMware roles are skipped in offline tests)
+vcenter_hostname: "vcenter.test.local"
+vcenter_username: "test-user"
+vcenter_password: "test-password"
+vcenter_datacenter: "TestDC"
+vcenter_validate_certs: false
+
+worker_vms:
+  - "test-worker-0"
+  - "test-worker-1"
+
+control_plane_vms:
+  - "test-master-0"
+  - "test-master-1"
+  - "test-master-2"
+
+# --- Timing — use minimal delays for fast test runs ------------------------
+delay_after_workers_shutdown: 1
+delay_between_control_plane_shutdown: 1
+delay_after_control_plane_power_on: 1
+delay_after_workers_power_on: 1
+
+# --- Health-check — minimal retries for tests --------------------------------
+api_health_retries: 2
+api_health_delay: 1
+node_ready_retries: 2
+node_ready_delay: 1
+cluster_operator_retries: 2
+cluster_operator_delay: 1
+
+# --- Logging -----------------------------------------------------------------
+log_dir: "/tmp/okd-test-logs"

@@ -1,0 +1,65 @@
+---
+# =============================================================================
+# OKD Cluster: okd-prod — Cluster-Specific Variables
+# =============================================================================
+# This file contains ALL variables that differ between clusters.
+# Shared defaults (drain timeouts, health-check retries, etc.) are in
+# role defaults and can be overridden here per cluster.
+# =============================================================================
+
+# --- Cluster identity --------------------------------------------------------
+cluster_name: "okd-prod"
+
+# --- KUBECONFIG path on the management VM ------------------------------------
+# Each cluster must have its own kubeconfig. Store them under a common
+# directory, named by cluster.
+kubeconfig_path: "/home/ansible/.kube/okd-prod.kubeconfig"
+
+# --- oc CLI binary path ------------------------------------------------------
+oc_binary: "/usr/local/bin/oc"
+
+# --- etcd backup -------------------------------------------------------------
+backup_dir: "/var/lib/etcd-backups/okd-prod"
+backup_retention_count: 5
+
+# --- Node drain settings -----------------------------------------------------
+drain_timeout_seconds: 300
+drain_grace_period_seconds: 30
+drain_delete_emptydir_data: true
+drain_skip_daemonsets: true
+drain_force: true
+
+# --- VMware vSphere connection -----------------------------------------------
+vcenter_hostname: "vcenter.example.com"
+vcenter_username: "{{ vault_vcenter_username }}"
+vcenter_password: "{{ vault_vcenter_password }}"
+vcenter_datacenter: "DC1"
+vcenter_validate_certs: false
+
+# --- VM names as they appear in vSphere inventory ----------------------------
+worker_vms:
+  - "okd-prod-worker-0"
+  - "okd-prod-worker-1"
+  - "okd-prod-worker-2"
+
+control_plane_vms:
+  - "okd-prod-master-0"
+  - "okd-prod-master-1"
+  - "okd-prod-master-2"
+
+# --- Delay / timing settings (seconds) --------------------------------------
+delay_after_workers_shutdown: 30
+delay_between_control_plane_shutdown: 15
+delay_after_control_plane_power_on: 60
+delay_after_workers_power_on: 30
+
+# --- Startup health-check settings -------------------------------------------
+api_health_retries: 30
+api_health_delay: 20
+node_ready_retries: 40
+node_ready_delay: 15
+cluster_operator_retries: 60
+cluster_operator_delay: 20
+
+# --- Logging -----------------------------------------------------------------
+log_dir: "./logs"

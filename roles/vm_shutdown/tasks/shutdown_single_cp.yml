@@ -1,0 +1,53 @@
+---
+# =============================================================================
+# Sub-task: Shut down a single control-plane VM (called in a loop)
+# =============================================================================
+# Variables available from the parent loop:
+#   item           — VM name
+#   _cp_index      — zero-based index in the shutdown list
+#   _cp_to_shutdown — full ordered list
+
+- name: "cp:{{ item }} | Remaining control planes after this shutdown"
+  ansible.builtin.set_fact:
+    _remaining_cp: "{{ (_cp_to_shutdown | length) - (_cp_index + 1) }}"
+
+- name: "cp:{{ item }} | Quorum status"
+  ansible.builtin.debug:
+    msg: >-
+      Shutting down {{ item }}.
+      After this: {{ _remaining_cp }} control plane(s) will remain running.
+      {{ 'Quorum is maintained (>= 2 of 3).' if (_remaining_cp | int) >= 2
+         else 'Quorum will be lost — intentional full shutdown.' }}
+
+- name: "cp:{{ item }} | Graceful guest shutdown"
+  community.vmware.vmware_guest_powerstate:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+    state: shutdown-guest
+    state_change_timeout: 300
+  register: _cp_shutdown_result
+  retries: 2
+  delay: 10
+  until: _cp_shutdown_result is not failed
+
+- name: "cp:{{ item }} | Wait for poweredOff state"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+  register: _cp_power_check
+  retries: 20
+  delay: 15
+  until: _cp_power_check.instance.hw_power_status == 'poweredOff'
+
+- name: "cp:{{ item }} | Delay before next control-plane shutdown"
+  ansible.builtin.pause:
+    seconds: "{{ delay_between_control_plane_shutdown }}"
+  when: (_cp_index + 1) < (_cp_to_shutdown | length)

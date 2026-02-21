@@ -1,0 +1,21 @@
+# Runtime artifacts
+logs/
+*.retry
+
+# Ansible Vault password file — NEVER commit this
+.vault_pass
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

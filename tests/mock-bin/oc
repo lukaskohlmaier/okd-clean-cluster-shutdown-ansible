@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Mock `oc` CLI for offline / dry-run testing
+# =============================================================================
+# Returns canned responses for every oc subcommand used by the playbooks.
+# Point oc_binary at this script in the test inventory.
+#
+# Usage:
+#   chmod +x tests/mock-bin/oc
+#   Set oc_binary: "tests/mock-bin/oc" in test inventory group_vars.
+# =============================================================================
+
+set -euo pipefail
+
+# Join all arguments so we can pattern-match the full command line.
+ARGS="$*"
+
+# ---- cluster-info -----------------------------------------------------------
+if [[ "$ARGS" == *"cluster-info"* ]]; then
+  echo "Kubernetes control plane is running at https://api.test-cluster.example.com:6443"
+  exit 0
+fi
+
+# ---- adm cluster-backup ----------------------------------------------------
+if [[ "$ARGS" == *"adm cluster-backup"* ]]; then
+  # Extract the --to= path and create the directory to satisfy the find task.
+  TO_DIR=$(echo "$ARGS" | grep -oP '(?<=--to=)\S+')
+  if [[ -n "$TO_DIR" ]]; then
+    mkdir -p "$TO_DIR"
+    echo "snapshot saved to: ${TO_DIR}/snapshot.db"
+    echo "static pod resources saved to: ${TO_DIR}/static-pods"
+  else
+    echo "snapshot saved to: /tmp/mock-backup/snapshot.db"
+  fi
+  exit 0
+fi
+
+# ---- get nodes -l ... -o jsonpath (drain role: get worker names) ------------
+if [[ "$ARGS" == *"get nodes"* && "$ARGS" == *"jsonpath"* && "$ARGS" == *"worker"* ]]; then
+  echo "test-worker-0 test-worker-1"
+  exit 0
+fi
+
+# ---- get nodes -o json (healthcheck role: full node status) -----------------
+if [[ "$ARGS" == *"get nodes"* && "$ARGS" == *"-o json"* ]]; then
+  cat <<'NODES_JSON'
+{
+  "items": [
+    {
+      "metadata": {"name": "test-master-0"},
+      "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+    },
+    {
+      "metadata": {"name": "test-master-1"},
+      "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+    },
+    {
+      "metadata": {"name": "test-master-2"},
+      "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+    },
+    {
+      "metadata": {"name": "test-worker-0"},
+      "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+    },
+    {
+      "metadata": {"name": "test-worker-1"},
+      "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+    }
+  ]
+}
+NODES_JSON
+  exit 0
+fi
+
+# ---- get nodes -l worker (healthcheck uncordon: get worker names) -----------
+if [[ "$ARGS" == *"get nodes"* && "$ARGS" == *"worker"* ]]; then
+  echo "test-worker-0 test-worker-1"
+  exit 0
+fi
+
+# ---- adm cordon ------------------------------------------------------------
+if [[ "$ARGS" == *"adm cordon"* ]]; then
+  NODE=$(echo "$ARGS" | awk '{print $NF}')
+  echo "node/${NODE} cordoned"
+  exit 0
+fi
+
+# ---- adm drain --------------------------------------------------------------
+if [[ "$ARGS" == *"adm drain"* ]]; then
+  NODE=$(echo "$ARGS" | awk '{print $NF}')
+  echo "evicting pod default/test-pod-1"
+  echo "evicting pod default/test-pod-2"
+  echo "node/${NODE} drained"
+  exit 0
+fi
+
+# ---- adm uncordon -----------------------------------------------------------
+if [[ "$ARGS" == *"adm uncordon"* ]]; then
+  NODE=$(echo "$ARGS" | awk '{print $NF}')
+  echo "node/${NODE} uncordoned"
+  exit 0
+fi
+
+# ---- wait --for=condition=Ready (healthcheck) --------------------------------
+if [[ "$ARGS" == *"wait --for=condition=Ready"* ]]; then
+  echo "node/test-master-0 condition met"
+  echo "node/test-master-1 condition met"
+  echo "node/test-master-2 condition met"
+  echo "node/test-worker-0 condition met"
+  echo "node/test-worker-1 condition met"
+  exit 0
+fi
+
+# ---- get clusteroperators -o json (healthcheck) -----------------------------
+if [[ "$ARGS" == *"get clusteroperators"* ]]; then
+  cat <<'CO_JSON'
+{
+  "items": [
+    {
+      "metadata": {"name": "authentication"},
+      "status": {"conditions": [
+        {"type": "Available", "status": "True"},
+        {"type": "Degraded", "status": "False"}
+      ]}
+    },
+    {
+      "metadata": {"name": "console"},
+      "status": {"conditions": [
+        {"type": "Available", "status": "True"},
+        {"type": "Degraded", "status": "False"}
+      ]}
+    },
+    {
+      "metadata": {"name": "etcd"},
+      "status": {"conditions": [
+        {"type": "Available", "status": "True"},
+        {"type": "Degraded", "status": "False"}
+      ]}
+    }
+  ]
+}
+CO_JSON
+  exit 0
+fi
+
+# ---- get etcd cluster -o jsonpath (healthcheck) -----------------------------
+if [[ "$ARGS" == *"get etcd"* ]]; then
+  echo '[{"type":"Available","status":"True"},{"type":"Progressing","status":"False"},{"type":"Degraded","status":"False"}]'
+  exit 0
+fi
+
+# ---- Catch-all: unknown command — log and succeed ---------------------------
+echo "[mock-oc] Unhandled command: oc $ARGS" >&2
+exit 0

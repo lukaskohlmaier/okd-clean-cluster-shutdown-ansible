@@ -1,0 +1,9 @@
+---
+# =============================================================================
+# Ansible Vault — vCenter credentials for okd-prod
+# =============================================================================
+# Encrypt this file:   ansible-vault encrypt inventories/okd-prod/group_vars/vault.yml
+# =============================================================================
+
+vault_vcenter_username: "administrator@vsphere.local"
+vault_vcenter_password: "CHANGE_ME"

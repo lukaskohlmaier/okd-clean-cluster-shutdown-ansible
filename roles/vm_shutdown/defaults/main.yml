@@ -1,0 +1,10 @@
+---
+vcenter_hostname: "vcenter.example.com"
+vcenter_username: "{{ vault_vcenter_username }}"
+vcenter_password: "{{ vault_vcenter_password }}"
+vcenter_datacenter: "DC1"
+vcenter_validate_certs: false
+delay_after_workers_shutdown: 30
+delay_between_control_plane_shutdown: 15
+worker_vms: []
+control_plane_vms: []

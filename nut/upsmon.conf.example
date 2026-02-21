@@ -1,0 +1,35 @@
+# =============================================================================
+# NUT (Network UPS Tools) — upsmon.conf snippet
+# =============================================================================
+# This file is an EXAMPLE. Adapt paths and UPS names to your environment.
+# Place finals in /etc/nut/upsmon.conf on the management VM.
+#
+# Documentation: https://networkupstools.org/docs/man/upsmon.conf.html
+# =============================================================================
+
+# Monitor directive — adjust <ups_name>@<host> to match your ups.conf
+MONITOR myups@localhost 1 upsmon_user secret_password master
+
+# When the UPS signals "on battery" — informational only
+NOTIFYCMD /usr/local/bin/okd-nut-notify.sh
+
+# When battery is CRITICAL (FSD / forced shutdown) — trigger the playbook
+SHUTDOWNCMD "/opt/okd-shutdown/scripts/trigger-shutdown.sh"
+
+# Notification flags — EXEC runs NOTIFYCMD / SHUTDOWNCMD
+NOTIFYFLAG ONLINE       SYSLOG+EXEC
+NOTIFYFLAG ONBATT       SYSLOG+EXEC
+NOTIFYFLAG LOWBATT      SYSLOG+EXEC
+NOTIFYFLAG FSD          SYSLOG+EXEC
+NOTIFYFLAG SHUTDOWN     SYSLOG+EXEC
+
+# How long to wait (seconds) after UPS goes on-battery before declaring
+# it a real outage. Prevents reacting to micro-outages.
+DEADTIME 30
+
+# How frequently (seconds) upsmon checks the UPS
+POLLFREQ 5
+POLLFREQALERT 2
+
+# Forced-shutdown delay — gives the playbook time to finish
+FINALDELAY 0

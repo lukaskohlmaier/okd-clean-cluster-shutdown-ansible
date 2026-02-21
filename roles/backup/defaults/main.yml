@@ -1,0 +1,5 @@
+---
+backup_dir: "/var/lib/etcd-backups"
+backup_retention_count: 5
+kubeconfig_path: "/home/ansible/.kube/config"
+oc_binary: "/usr/local/bin/oc"

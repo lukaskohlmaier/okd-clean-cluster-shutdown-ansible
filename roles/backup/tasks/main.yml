@@ -1,0 +1,90 @@
+---
+# =============================================================================
+# Role: backup — Create etcd / cluster backup via `oc adm cluster-backup`
+# =============================================================================
+# Idempotent: safe to re-run. A new timestamped backup is created each time;
+# old backups beyond retention count are pruned automatically.
+# =============================================================================
+
+- name: Ensure backup directory exists
+  ansible.builtin.file:
+    path: "{{ backup_dir }}"
+    state: directory
+    mode: "0750"
+
+- name: Record backup start timestamp
+  ansible.builtin.set_fact:
+    _backup_start: "{{ ansible_date_time.iso8601 }}"
+
+# ---- Cluster API pre-flight check -------------------------------------------
+- name: Verify cluster API is reachable
+  ansible.builtin.command:
+    cmd: >-
+      {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+      cluster-info
+  register: _api_check
+  changed_when: false
+  retries: 3
+  delay: 10
+  until: _api_check.rc == 0
+
+- name: Log API health status
+  ansible.builtin.debug:
+    msg: "Cluster API reachable — proceeding with backup."
+
+# ---- Run etcd backup --------------------------------------------------------
+- name: Run oc adm cluster-backup
+  ansible.builtin.command:
+    cmd: >-
+      {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+      adm cluster-backup
+      --to={{ backup_dir }}/{{ cluster_name }}-{{ ansible_date_time.epoch }}
+  register: _backup_result
+  retries: 2
+  delay: 15
+  until: _backup_result.rc == 0
+
+- name: Assert backup command succeeded
+  ansible.builtin.assert:
+    that:
+      - _backup_result.rc == 0
+    fail_msg: >-
+      etcd backup failed. stdout={{ _backup_result.stdout | default('') }},
+      stderr={{ _backup_result.stderr | default('') }}
+    success_msg: "etcd backup completed successfully."
+
+- name: Log backup output
+  ansible.builtin.debug:
+    msg: "{{ _backup_result.stdout_lines | default([]) }}"
+
+# ---- Verify backup artifacts exist ------------------------------------------
+- name: Find backup directories
+  ansible.builtin.find:
+    paths: "{{ backup_dir }}"
+    file_type: directory
+    patterns: "{{ cluster_name }}-*"
+  register: _backup_dirs
+
+- name: Assert at least one backup exists
+  ansible.builtin.assert:
+    that:
+      - _backup_dirs.matched >= 1
+    fail_msg: "No backup directory found under {{ backup_dir }}."
+    success_msg: "Found {{ _backup_dirs.matched }} backup(s)."
+
+# ---- Prune old backups beyond retention count --------------------------------
+- name: Sort backups by modification time (oldest first)
+  ansible.builtin.set_fact:
+    _sorted_backups: >-
+      {{ _backup_dirs.files | sort(attribute='mtime') }}
+
+- name: Remove backups exceeding retention count
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: >-
+    {{ _sorted_backups[:-backup_retention_count | int]
+       if (_sorted_backups | length) > (backup_retention_count | int)
+       else [] }}
+  loop_control:
+    label: "{{ item.path | basename }}"

@@ -1,0 +1,8 @@
+---
+drain_timeout_seconds: 300
+drain_grace_period_seconds: 30
+drain_delete_emptydir_data: true
+drain_skip_daemonsets: true
+drain_force: true
+kubeconfig_path: "/home/ansible/.kube/config"
+oc_binary: "/usr/local/bin/oc"

@@ -1,0 +1,9 @@
+---
+kubeconfig_path: "/home/ansible/.kube/config"
+oc_binary: "/usr/local/bin/oc"
+api_health_retries: 30
+api_health_delay: 20
+node_ready_retries: 40
+node_ready_delay: 15
+cluster_operator_retries: 60
+cluster_operator_delay: 20

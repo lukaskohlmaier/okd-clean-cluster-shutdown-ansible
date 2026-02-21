@@ -1,0 +1,135 @@
+---
+# =============================================================================
+# Role: vm_shutdown — Gracefully power-off VMs via VMware API
+# =============================================================================
+# Execution order:
+#   1. Shut down all worker VMs in parallel.
+#   2. Wait a configurable delay.
+#   3. Shut down control-plane VMs one-by-one, preserving etcd quorum
+#      (at least 2 of 3 control planes remain running until the final pair).
+#
+# Idempotent: powering off an already powered-off VM is a no-op (state check).
+# =============================================================================
+
+# ==== PHASE 1 — Worker VMs ===================================================
+
+- name: "workers | Get current power state"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+  loop: "{{ worker_vms }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _worker_info
+
+- name: "workers | Build list of VMs that are powered on"
+  ansible.builtin.set_fact:
+    _workers_to_shutdown: >-
+      {{ _worker_info.results
+         | selectattr('instance', 'defined')
+         | selectattr('instance.hw_power_status', 'equalto', 'poweredOn')
+         | map(attribute='item')
+         | list }}
+
+- name: "workers | Log VMs to shut down"
+  ansible.builtin.debug:
+    msg: "Workers to shut down: {{ _workers_to_shutdown }}"
+
+- name: "workers | Graceful guest shutdown"
+  community.vmware.vmware_guest_powerstate:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+    state: shutdown-guest
+    state_change_timeout: 300
+  loop: "{{ _workers_to_shutdown }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _worker_shutdown
+  retries: 2
+  delay: 10
+  until: _worker_shutdown is not failed
+
+- name: "workers | Wait for VMs to reach poweredOff state"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+  loop: "{{ _workers_to_shutdown }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _worker_powercheck
+  retries: 20
+  delay: 15
+  until: >-
+    _worker_powercheck.instance.hw_power_status == 'poweredOff'
+
+- name: "workers | Log shutdown complete"
+  ansible.builtin.debug:
+    msg: "All worker VMs are powered off."
+
+- name: "workers | Delay before control-plane shutdown"
+  ansible.builtin.pause:
+    seconds: "{{ delay_after_workers_shutdown }}"
+
+# ==== PHASE 2 — Control-Plane VMs (quorum-aware) =============================
+#
+# Quorum rule for a 3-node etcd cluster: majority = 2.
+# Shutdown sequence:
+#   - First control plane  → 2 remain (quorum intact)
+#   - Second control plane → 1 remains (quorum lost — acceptable only because
+#     this is an intentional full shutdown)
+#   - Third control plane  → 0 remain — cluster is fully off
+#
+# We shut down one at a time with a delay between each to allow etcd to
+# gracefully transfer leadership before the member disappears.
+
+- name: "control-plane | Get current power state"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+  loop: "{{ control_plane_vms }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _cp_info
+
+- name: "control-plane | Build ordered shutdown list"
+  ansible.builtin.set_fact:
+    _cp_to_shutdown: >-
+      {{ _cp_info.results
+         | selectattr('instance', 'defined')
+         | selectattr('instance.hw_power_status', 'equalto', 'poweredOn')
+         | map(attribute='item')
+         | list }}
+
+- name: "control-plane | Log VMs to shut down"
+  ansible.builtin.debug:
+    msg: >-
+      Control-plane VMs to shut down (in order): {{ _cp_to_shutdown }}
+      ({{ _cp_to_shutdown | length }} of {{ control_plane_vms | length }})
+
+# Shut down one-by-one using include_tasks to enforce serial execution.
+- name: "control-plane | Sequential shutdown with quorum awareness"
+  ansible.builtin.include_tasks: shutdown_single_cp.yml
+  loop: "{{ _cp_to_shutdown }}"
+  loop_control:
+    index_var: _cp_index
+    label: "{{ item }} ({{ _cp_index + 1 }}/{{ _cp_to_shutdown | length }})"
+
+- name: "control-plane | Log full cluster shutdown complete"
+  ansible.builtin.debug:
+    msg: "All control-plane VMs are powered off. Cluster shutdown is complete."

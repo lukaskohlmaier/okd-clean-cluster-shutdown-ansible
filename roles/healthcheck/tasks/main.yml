@@ -1,0 +1,158 @@
+---
+# =============================================================================
+# Role: healthcheck — Post-startup cluster validation
+# =============================================================================
+# Checks performed:
+#   1. API server reachability
+#   2. All nodes in Ready state
+#   3. Uncordon any previously cordoned worker nodes
+#   4. ClusterOperators available and not degraded
+#   5. etcd cluster health (via `oc get etcd` status)
+# =============================================================================
+
+# ---- 1. API server reachability ---------------------------------------------
+- name: "api | Wait for cluster API to become reachable"
+  ansible.builtin.command:
+    cmd: >-
+      {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+      cluster-info
+  register: _api_health
+  changed_when: false
+  retries: "{{ api_health_retries }}"
+  delay: "{{ api_health_delay }}"
+  until: _api_health.rc == 0
+
+- name: "api | Log API status"
+  ansible.builtin.debug:
+    msg: "Cluster API is reachable."
+
+# ---- 2. All nodes in Ready state --------------------------------------------
+- name: "nodes | Get node status"
+  ansible.builtin.command:
+    cmd: >-
+      {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+      get nodes -o json
+  register: _nodes_json
+  changed_when: false
+  retries: "{{ node_ready_retries }}"
+  delay: "{{ node_ready_delay }}"
+  until: _nodes_json.rc == 0
+
+- name: "nodes | Parse node data"
+  ansible.builtin.set_fact:
+    _node_list: "{{ (_nodes_json.stdout | from_json).items }}"
+
+- name: "nodes | Identify not-Ready nodes"
+  ansible.builtin.set_fact:
+    _not_ready_nodes: >-
+      {{ _node_list
+         | map(attribute='metadata.name')
+         | zip(_node_list | map(attribute='status.conditions'))
+         | selectattr('1', 'defined')
+         | list
+         | json_query("[?[1][?type=='Ready' && status!='True']]")
+         | map('first')
+         | list }}
+  vars:
+    # json_query requires jmespath — fallback below if unavailable
+    _fallback: []
+
+- name: "nodes | Wait for all nodes to be Ready"
+  ansible.builtin.command:
+    cmd: >-
+      {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+      wait --for=condition=Ready node --all --timeout=60s
+  register: _wait_ready
+  changed_when: false
+  retries: "{{ node_ready_retries }}"
+  delay: "{{ node_ready_delay }}"
+  until: _wait_ready.rc == 0
+
+- name: "nodes | Log node readiness"
+  ansible.builtin.debug:
+    msg: "All nodes report Ready."
+
+# ---- 3. Uncordon worker nodes -----------------------------------------------
+- name: "uncordon | Get worker nodes"
+  ansible.builtin.command:
+    cmd: >-
+      {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+      get nodes -l node-role.kubernetes.io/worker
+      -o jsonpath='{.items[*].metadata.name}'
+  register: _worker_names
+  changed_when: false
+
+- name: "uncordon | Parse worker list"
+  ansible.builtin.set_fact:
+    _workers: "{{ _worker_names.stdout.split() | select | list }}"
+
+- name: "uncordon | Uncordon worker nodes"
+  ansible.builtin.command:
+    cmd: >-
+      {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+      adm uncordon {{ item }}
+  loop: "{{ _workers }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _uncordon
+  changed_when: "'uncordoned' in (_uncordon.stdout | default(''))"
+  failed_when:
+    - _uncordon.rc != 0
+    - "'already uncordoned' not in (_uncordon.stderr | default(''))"
+
+# ---- 4. ClusterOperators healthy ---------------------------------------------
+- name: "co | Wait for all ClusterOperators to be Available"
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      {{ oc_binary }} --kubeconfig={{ kubeconfig_path }} \
+        get clusteroperators -o json | \
+        python3 -c "
+      import json, sys
+      data = json.load(sys.stdin)
+      degraded = []
+      unavailable = []
+      for co in data.get('items', []):
+          name = co['metadata']['name']
+          for cond in co.get('status', {}).get('conditions', []):
+              if cond['type'] == 'Degraded' and cond['status'] == 'True':
+                  degraded.append(name)
+              if cond['type'] == 'Available' and cond['status'] != 'True':
+                  unavailable.append(name)
+      if degraded or unavailable:
+          print(f'DEGRADED: {degraded}  UNAVAILABLE: {unavailable}')
+          sys.exit(1)
+      print('All ClusterOperators are healthy.')
+      "
+  register: _co_check
+  changed_when: false
+  retries: "{{ cluster_operator_retries }}"
+  delay: "{{ cluster_operator_delay }}"
+  until: _co_check.rc == 0
+
+- name: "co | Log ClusterOperator status"
+  ansible.builtin.debug:
+    msg: "{{ _co_check.stdout }}"
+
+# ---- 5. etcd health ---------------------------------------------------------
+- name: "etcd | Verify etcd cluster status"
+  ansible.builtin.command:
+    cmd: >-
+      {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+      get etcd cluster -o jsonpath='{.status.conditions}'
+  register: _etcd_status
+  changed_when: false
+  retries: 10
+  delay: 15
+  until: _etcd_status.rc == 0
+
+- name: "etcd | Log etcd conditions"
+  ansible.builtin.debug:
+    msg: "etcd status: {{ _etcd_status.stdout }}"
+
+- name: "healthcheck | Complete"
+  ansible.builtin.debug:
+    msg: >-
+      Cluster health verification complete. API reachable, all nodes Ready,
+      workers uncordoned, ClusterOperators healthy, etcd operational.

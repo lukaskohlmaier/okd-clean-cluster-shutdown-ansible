@@ -1,0 +1,88 @@
+---
+# =============================================================================
+# Role: drain — Cordon and drain all worker nodes
+# =============================================================================
+# Uses `oc adm cordon` + `oc adm drain` rather than kubernetes.core modules to
+# stay consistent with OKD best practices and support DaemonSet skip flags.
+#
+# Idempotent: cordoning an already-cordoned node is a no-op; draining an empty
+# node completes immediately.
+# =============================================================================
+
+# ---- Discover schedulable worker nodes --------------------------------------
+- name: Get list of worker nodes
+  ansible.builtin.command:
+    cmd: >-
+      {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+      get nodes
+      -l node-role.kubernetes.io/worker
+      -o jsonpath='{.items[*].metadata.name}'
+  register: _worker_nodes_raw
+  changed_when: false
+  retries: 3
+  delay: 10
+  until: _worker_nodes_raw.rc == 0
+
+- name: Parse worker node list
+  ansible.builtin.set_fact:
+    _worker_nodes: "{{ _worker_nodes_raw.stdout.split() | select | list }}"
+
+- name: Log discovered worker nodes
+  ansible.builtin.debug:
+    msg: "Worker nodes to drain: {{ _worker_nodes }}"
+
+- name: Skip drain when no workers found
+  ansible.builtin.debug:
+    msg: "No worker nodes found — skipping cordon and drain."
+  when: _worker_nodes | length == 0
+
+- name: Cordon and drain workers
+  when: _worker_nodes | length > 0
+  block:
+    # ---- Cordon all workers (mark unschedulable) ----------------------------
+    - name: Cordon worker nodes
+      ansible.builtin.command:
+        cmd: >-
+          {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+          adm cordon {{ item }}
+      loop: "{{ _worker_nodes }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _cordon_result
+      changed_when: "'cordoned' in (_cordon_result.stdout | default(''))"
+      failed_when:
+        - _cordon_result.rc != 0
+        - "'already cordoned' not in (_cordon_result.stderr | default(''))"
+
+    # ---- Drain all workers --------------------------------------------------
+    - name: Build drain command
+      ansible.builtin.set_fact:
+        _drain_cmd: >-
+          {{ oc_binary }} --kubeconfig={{ kubeconfig_path }}
+          adm drain
+          --timeout={{ drain_timeout_seconds }}s
+          --grace-period={{ drain_grace_period_seconds }}
+          --delete-emptydir-data={{ drain_delete_emptydir_data | lower }}
+          {{ '--ignore-daemonsets' if drain_skip_daemonsets else '' }}
+          {{ '--force' if drain_force else '' }}
+
+    - name: Drain worker nodes
+      ansible.builtin.command:
+        cmd: "{{ _drain_cmd }} {{ item }}"
+      loop: "{{ _worker_nodes }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _drain_result
+      retries: 2
+      delay: 15
+      until: _drain_result.rc == 0
+      changed_when: true
+
+    - name: Log drain results
+      ansible.builtin.debug:
+        msg: >-
+          Node {{ item.item }} drain rc={{ item.rc }},
+          stdout={{ item.stdout_lines | default([]) | last | default('ok') }}
+      loop: "{{ _drain_result.results }}"
+      loop_control:
+        label: "{{ item.item }}"

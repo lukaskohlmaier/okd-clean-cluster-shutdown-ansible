@@ -1,0 +1,55 @@
+---
+# =============================================================================
+# OKD Cluster: okd-staging — Cluster-Specific Variables
+# =============================================================================
+# Copy of okd-prod with staging-specific overrides.
+# Demonstrates that each cluster can target a different vCenter, datacenter,
+# kubeconfig, or use entirely different VM names and timing.
+# =============================================================================
+
+cluster_name: "okd-staging"
+
+kubeconfig_path: "/home/ansible/.kube/okd-staging.kubeconfig"
+oc_binary: "/usr/local/bin/oc"
+
+backup_dir: "/var/lib/etcd-backups/okd-staging"
+backup_retention_count: 3
+
+# --- Node drain — staging can be more aggressive ----------------------------
+drain_timeout_seconds: 120
+drain_grace_period_seconds: 10
+drain_delete_emptydir_data: true
+drain_skip_daemonsets: true
+drain_force: true
+
+# --- VMware — could be a different vCenter entirely -------------------------
+vcenter_hostname: "vcenter.example.com"
+vcenter_username: "{{ vault_vcenter_username }}"
+vcenter_password: "{{ vault_vcenter_password }}"
+vcenter_datacenter: "DC1"
+vcenter_validate_certs: false
+
+# --- VM names ----------------------------------------------------------------
+worker_vms:
+  - "okd-staging-worker-0"
+  - "okd-staging-worker-1"
+
+control_plane_vms:
+  - "okd-staging-master-0"
+  - "okd-staging-master-1"
+  - "okd-staging-master-2"
+
+# --- Timing — shorter delays for non-production ------------------------------
+delay_after_workers_shutdown: 10
+delay_between_control_plane_shutdown: 10
+delay_after_control_plane_power_on: 45
+delay_after_workers_power_on: 20
+
+api_health_retries: 20
+api_health_delay: 15
+node_ready_retries: 30
+node_ready_delay: 10
+cluster_operator_retries: 40
+cluster_operator_delay: 15
+
+log_dir: "./logs"

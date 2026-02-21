@@ -1,0 +1,66 @@
+---
+# =============================================================================
+# shutdown.yml — Graceful OKD cluster shutdown
+# =============================================================================
+# Triggered by UPS power-loss event (via NUT) or run manually.
+#
+# Execution order:
+#   1. Validate cluster health & create etcd backup  (role: backup)
+#   2. Cordon and drain all worker nodes              (role: drain)
+#   3. Shut down workers, then control-plane VMs      (role: vm_shutdown)
+#
+# Usage:
+#   ansible-playbook shutdown.yml --ask-vault-pass
+#   ansible-playbook shutdown.yml --vault-password-file=~/.vault_pass
+#
+# Safe for re-runs: each role is idempotent and checks current state before
+# taking action. Partially-failed runs can be resumed with --start-at-task.
+# =============================================================================
+
+- name: "OKD Cluster — Graceful Shutdown"
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+
+  pre_tasks:
+    - name: Ensure log directory exists
+      ansible.builtin.file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Log shutdown initiated
+      ansible.builtin.lineinfile:
+        path: "{{ log_dir }}/shutdown.log"
+        line: >-
+          {{ ansible_date_time.iso8601 }} — SHUTDOWN INITIATED
+          (triggered by {{ ansible_env.USER | default('unknown') }})
+        create: true
+        mode: "0644"
+
+  roles:
+    - role: backup
+      tags: [backup, etcd]
+    - role: drain
+      tags: [drain, workers]
+    - role: vm_shutdown
+      tags: [shutdown, vmware]
+
+  post_tasks:
+    - name: Log shutdown complete
+      ansible.builtin.lineinfile:
+        path: "{{ log_dir }}/shutdown.log"
+        line: >-
+          {{ ansible_date_time.iso8601 }} — SHUTDOWN COMPLETE
+        create: true
+        mode: "0644"
+
+    - name: Final status message
+      ansible.builtin.debug:
+        msg: >-
+          OKD cluster '{{ cluster_name }}' has been shut down gracefully.
+          Backup stored in {{ backup_dir }}.
+          See {{ log_dir }}/shutdown.log for full audit trail.

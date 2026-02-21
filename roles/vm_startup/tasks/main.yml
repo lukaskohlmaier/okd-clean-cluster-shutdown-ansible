@@ -1,0 +1,143 @@
+---
+# =============================================================================
+# Role: vm_startup — Power on VMs in reverse order (control plane first)
+# =============================================================================
+# Execution order (reverse of shutdown):
+#   1. Power on all control-plane VMs.
+#   2. Wait for VMware Tools to report the guests are running.
+#   3. Pause for API / etcd to stabilize.
+#   4. Power on all worker VMs.
+#   5. Pause for workers to join the cluster.
+# =============================================================================
+
+# ==== PHASE 1 — Control-Plane VMs ============================================
+
+- name: "control-plane | Get current power state"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+  loop: "{{ control_plane_vms }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _cp_info
+
+- name: "control-plane | Build list of VMs to power on"
+  ansible.builtin.set_fact:
+    _cp_to_start: >-
+      {{ _cp_info.results
+         | selectattr('instance', 'defined')
+         | selectattr('instance.hw_power_status', 'equalto', 'poweredOff')
+         | map(attribute='item')
+         | list }}
+
+- name: "control-plane | Log VMs to power on"
+  ansible.builtin.debug:
+    msg: "Control-plane VMs to start: {{ _cp_to_start }}"
+
+- name: "control-plane | Power on VMs"
+  community.vmware.vmware_guest_powerstate:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+    state: powered-on
+  loop: "{{ _cp_to_start }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _cp_start_result
+  retries: 3
+  delay: 10
+  until: _cp_start_result is not failed
+
+- name: "control-plane | Wait for VMs to reach poweredOn state"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+  loop: "{{ _cp_to_start }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _cp_power_check
+  retries: 20
+  delay: 15
+  until: _cp_power_check.instance.hw_power_status == 'poweredOn'
+
+- name: "control-plane | Wait for API / etcd stabilization"
+  ansible.builtin.pause:
+    seconds: "{{ delay_after_control_plane_power_on }}"
+  when: _cp_to_start | length > 0
+
+# ==== PHASE 2 — Worker VMs ===================================================
+
+- name: "workers | Get current power state"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+  loop: "{{ worker_vms }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _worker_info
+
+- name: "workers | Build list of VMs to power on"
+  ansible.builtin.set_fact:
+    _workers_to_start: >-
+      {{ _worker_info.results
+         | selectattr('instance', 'defined')
+         | selectattr('instance.hw_power_status', 'equalto', 'poweredOff')
+         | map(attribute='item')
+         | list }}
+
+- name: "workers | Log VMs to power on"
+  ansible.builtin.debug:
+    msg: "Worker VMs to start: {{ _workers_to_start }}"
+
+- name: "workers | Power on VMs"
+  community.vmware.vmware_guest_powerstate:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+    state: powered-on
+  loop: "{{ _workers_to_start }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _worker_start_result
+  retries: 3
+  delay: 10
+  until: _worker_start_result is not failed
+
+- name: "workers | Wait for VMs to reach poweredOn state"
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    name: "{{ item }}"
+  loop: "{{ _workers_to_start }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _worker_power_check
+  retries: 20
+  delay: 15
+  until: _worker_power_check.instance.hw_power_status == 'poweredOn'
+
+- name: "workers | Wait for nodes to register with the cluster"
+  ansible.builtin.pause:
+    seconds: "{{ delay_after_workers_power_on }}"
+  when: _workers_to_start | length > 0
